@@ -1,0 +1,613 @@
+To create a Terratest for an Azure Network AVM (Azure Virtual Machine) module with multiple VNets and subnets passed as variables, we can follow these steps:
+
+1. **Install Dependencies**: Ensure you have the necessary dependencies installed:
+   - Go to your terminal and install Go if you haven’t already.
+   - Install Terratest by running `go get github.com/gruntwork-io/terratest/modules/azure`.
+
+2. **Define Input Variables**: Create a file where you will define the variables for the VNets and subnets. This will be used in your Terraform code.
+
+3. **Terraform Configuration**:
+   - Define multiple VNets and subnets in your Terraform code, parameterized with variables.
+   - The Terraform code would look like this (let’s assume you are using a module for the VM network setup):
+
+```hcl
+variable "vnets" {
+  type = list(object({
+    name    = string
+    address = string
+    subnets = list(object({
+      name          = string
+      address_prefix = string
+    }))
+  }))
+}
+
+module "azure_network_avm" {
+  source = "./modules/azure-network-avm"
+
+  vnets = var.vnets
+}
+```
+
+4. **Write Terratest**:
+   In your Terratest code, you will define the test to ensure that the network infrastructure (VNets and Subnets) is created properly.
+
+Here’s an example in Go:
+
+```go
+package test
+
+import (
+	"testing"
+	"fmt"
+	"strings"
+	"github.com/gruntwork-io/terratest/modules/azure"
+	"github.com/gruntwork-io/terratest/modules/terraform"
+	"github.com/stretchr/testify/assert"
+)
+
+func TestAzureNetworkAVMModule(t *testing.T) {
+	// Set up testing options
+	t.Parallel()
+
+	// Define the terraform options
+	terraformOptions := &terraform.Options{
+		// The path to the Terraform code
+		TerraformDir: "../",
+
+		// Variables to pass into our Terraform configuration
+		Variables: map[string]interface{}{
+			"vnets": []interface{}{
+				map[string]interface{}{
+					"name":    "vnet1",
+					"address": "10.0.0.0/16",
+					"subnets": []interface{}{
+						map[string]interface{}{
+							"name":          "subnet1",
+							"address_prefix": "10.0.1.0/24",
+						},
+					},
+				},
+				map[string]interface{}{
+					"name":    "vnet2",
+					"address": "10.1.0.0/16",
+					"subnets": []interface{}{
+						map[string]interface{}{
+							"name":          "subnet2",
+							"address_prefix": "10.1.1.0/24",
+						},
+					},
+				},
+			},
+		},
+
+		// Variables from terraform.tfvars if needed (e.g., if you're passing values from files)
+		// TerraformVarsFiles: []string{"terraform.tfvars"},
+
+		// Variables to change to your specific configuration
+		EnvVars: map[string]string{
+			"ARM_CLIENT_ID":     "your-client-id",
+			"ARM_CLIENT_SECRET": "your-client-secret",
+			"ARM_SUBSCRIPTION_ID": "your-subscription-id",
+			"ARM_TENANT_ID":     "your-tenant-id",
+		},
+
+		// Disable colors in Terraform commands
+		NoColor: true,
+	}
+
+	// Run Terraform init and apply
+	defer terraform.Destroy(t, terraformOptions)
+	terraform.InitAndApply(t, terraformOptions)
+
+	// Check if the resources were created
+	for _, vnet := range []string{"vnet1", "vnet2"} {
+		// Get the VNet resource from Terraform state
+		vnetResource := terraform.Output(t, terraformOptions, vnet)
+
+		// Assert that the VNet name is correct
+		assert.True(t, strings.Contains(vnetResource, fmt.Sprintf("name=%s", vnet)), "Expected VNet %s, but got %s", vnet, vnetResource)
+	}
+
+	for _, subnet := range []string{"subnet1", "subnet2"} {
+		// Get the Subnet resource from Terraform state
+		subnetResource := terraform.Output(t, terraformOptions, subnet)
+
+		// Assert that the Subnet name is correct
+		assert.True(t, strings.Contains(subnetResource, fmt.Sprintf("name=%s", subnet)), "Expected Subnet %s, but got %s", subnet, subnetResource)
+	}
+
+	// Check if the VM has the correct network interface
+	// Add your checks for VM setup here.
+}
+```
+
+### Explanation:
+- **Terraform Configuration**: The Terraform configuration defines the variables for the VNets and subnets. The module `azure_network_avm` is configured with these variables to create the desired network infrastructure.
+  
+- **Terratest**: The Go code is set up to:
+  1. Initialize the Terraform configuration with the necessary variables.
+  2. Apply the Terraform configuration to deploy the Azure resources.
+  3. Use assertions to check if the VNets and subnets have been correctly created by checking the `terraform.Output` values, ensuring the expected VNet and Subnet names appear.
+
+### Testing:
+- Run the test using the following command:
+  
+  ```bash
+  go test -v
+  ```
+
+This test ensures that the VNets and subnets have been created as expected, and you can extend it to check other resources like the AVM network setup and VM creation.
+
+To use the provided Azure configuration with multiple VNets and subnets in your Terratest code, you'll need to define the input variables accordingly, pass them into the Terraform configuration, and then test the created resources. The structure you've provided is a good start. Let's walk through how you can integrate this configuration into your Terratest script.
+
+### 1. **Terraform Configuration**:
+Ensure the Terraform code accepts variables as inputs and defines the resources accordingly. Based on your provided configuration, the `cc_vnet` input can be passed as a complex map.
+
+Here is a simplified example of how the Terraform code might look:
+
+#### `variables.tf`:
+```hcl
+variable "cc_vnet" {
+  type = map(object({
+    name                = string
+    resource_group_name = string
+    location            = string
+    address_space       = list(string)
+    subnets = map(object({
+      name                              = string
+      address_prefixes                  = list(string)
+      nsg_name                          = string
+      private_endpoint_network_policies = string
+      service_endpoints                 = list(string)
+      delegation                        = list(object({
+        name              = string
+        service_delegation = object({
+          name    = string
+          actions = list(string)
+        })
+      }))
+    }))
+  }))
+}
+```
+
+#### `main.tf` (a simplified example):
+```hcl
+resource "azurerm_virtual_network" "vnet" {
+  for_each = var.cc_vnet
+
+  name                = each.value.name
+  location            = each.value.location
+  resource_group_name = each.value.resource_group_name
+  address_space       = each.value.address_space
+
+  tags = {
+    "Environment" = "production"
+  }
+}
+
+resource "azurerm_subnet" "subnet" {
+  for_each = { for subnet_name, subnet_data in flatten([for vnet_name, vnet_data in var.cc_vnet : vnet_data.subnets]) : subnet_name => subnet_data }
+
+  name                              = each.value.name
+  resource_group_name               = var.cc_vnet[each.key].resource_group_name
+  virtual_network_name              = var.cc_vnet[each.key].name
+  address_prefixes                  = each.value.address_prefixes
+  service_endpoints                 = each.value.service_endpoints
+  private_endpoint_network_policies = each.value.private_endpoint_network_policies
+  delegation                        = each.value.delegation
+}
+```
+
+### 2. **Terratest Code**:
+
+Now you can write a Terratest to test the creation of the VNets and subnets.
+
+Here’s an example Terratest in Go:
+
+#### `test_azure_network_avm.go`:
+```go
+package test
+
+import (
+	"testing"
+	"fmt"
+	"strings"
+	"github.com/gruntwork-io/terratest/modules/terraform"
+	"github.com/stretchr/testify/assert"
+)
+
+func TestAzureNetworkAVMModule(t *testing.T) {
+	t.Parallel()
+
+	// Terraform Options
+	terraformOptions := &terraform.Options{
+		// Path to the Terraform code
+		TerraformDir: "../",
+
+		// Variables to pass into the Terraform configuration
+		Variables: map[string]interface{}{
+			"cc_vnet": map[string]interface{}{
+				"vnet1": map[string]interface{}{
+					"name":                "MF_MDI_CC_PROD_CORE-VNET",
+					"resource_group_name": "MF_MDIxMI_Github_PROD_RG",
+					"location":            "canadacentral",
+					"address_space":       []string{"10.125.176.0/21"},
+					"subnets": map[string]interface{}{
+						"subnet1": map[string]interface{}{
+							"name":                              "MF_MDI_CC_PERF_SQLMI-SNET",
+							"address_prefixes":                  []string{"10.125.181.192/27"},
+							"nsg_name":                          "MF_MDI_CC_SQLMI-NSG",
+							"private_endpoint_network_policies": "Disabled",
+							"delegation": []interface{}{
+								map[string]interface{}{
+									"name": "sqlMI",
+									"service_delegation": map[string]interface{}{
+										"name":    "Microsoft.Sql/managedInstances",
+										"actions": []string{"Microsoft.Network/virtualNetworks/subnets/join/action", "Microsoft.Network/virtualNetworks/subnets/prepareNetworkPolicies/action", "Microsoft.Network/virtualNetworks/subnets/unprepareNetworkPolicies/action"},
+									},
+								},
+							},
+						},
+					},
+				},
+				"vnet2": map[string]interface{}{
+					"name":                "MF_MDI_CC_PROD_API-VNET",
+					"resource_group_name": "MF_MDIxMI_Github_PROD_RG",
+					"location":            "canadacentral",
+					"address_space":       []string{"10.125.176.0/21"},
+					"subnets": map[string]interface{}{
+						"s1": map[string]interface{}{
+							"name":                              "MF_MDI_CC_APIM-SNET",
+							"address_prefixes":                  []string{"10.125.187.64/26"},
+							"nsg_name":                          "MF_MDI_CC_APIM-NSG",
+							"service_endpoints":                 []string{"Microsoft.AzureCosmosDB", "Microsoft.Storage"},
+							"private_endpoint_network_policies": "Disabled",
+						},
+					},
+				},
+			},
+		},
+
+		// Disable colors in Terraform commands
+		NoColor: true,
+	}
+
+	// Run Terraform init and apply
+	defer terraform.Destroy(t, terraformOptions)
+	terraform.InitAndApply(t, terraformOptions)
+
+	// Check if the resources are created as expected
+	vnetName := terraform.Output(t, terraformOptions, "vnet1_name")
+	assert.True(t, strings.Contains(vnetName, "MF_MDI_CC_PROD_CORE-VNET"))
+
+	subnetName := terraform.Output(t, terraformOptions, "subnet1_name")
+	assert.True(t, strings.Contains(subnetName, "MF_MDI_CC_PERF_SQLMI-SNET"))
+}
+```
+
+### 3. **Explanation**:
+- **Terraform Configuration**: The Terraform configuration has been structured to accept the `cc_vnet` as input variables. Each VNet and subnet can be customized as necessary by the `cc_vnet` variable, which is passed from Terratest.
+  
+- **Terratest Script**: The Go script initializes Terraform with the necessary variables, applies the configuration, and checks whether the VNets and subnets are created as expected using assertions.
+
+### 4. **Run the Test**:
+To run the test, make sure you have the required Azure credentials set up (e.g., using the Azure CLI or service principal).
+
+Run the following command in your terminal:
+
+```bash
+go test -v
+```
+
+This will trigger the test, apply the Terraform configuration, and check that the expected VNets and subnets are created correctly in Azure.
+
+To create a generic Terratest for testing Azure networks based on input variables, you'll want to set up the test in such a way that it can handle various network configurations, including multiple VNets, subnets, and their associated settings. The idea is to make the test reusable and adaptable to different scenarios by passing input variables dynamically.
+
+### Steps to create a generic Terratest:
+
+1. **Define input variables** for the Azure VNet and subnet configuration.
+2. **Initialize and apply Terraform** using the input values.
+3. **Validate the created resources** (VNets, subnets, etc.) to ensure they are created as expected.
+
+Here’s a generic Terratest example in Go:
+
+### 1. **Terraform Configuration**
+Create a generic Terraform configuration file that accepts dynamic input variables for VNets and subnets.
+
+#### `variables.tf`
+```hcl
+variable "vnets" {
+  description = "A map of VNets to create"
+  type = map(object({
+    name                = string
+    location            = string
+    resource_group_name = string
+    address_space       = list(string)
+    subnets             = map(object({
+      name                              = string
+      address_prefixes                  = list(string)
+      nsg_name                          = string
+      service_endpoints                 = list(string)
+      private_endpoint_network_policies = string
+    }))
+  }))
+}
+```
+
+#### `main.tf`
+```hcl
+resource "azurerm_virtual_network" "vnet" {
+  for_each = var.vnets
+
+  name                = each.value.name
+  location            = each.value.location
+  resource_group_name = each.value.resource_group_name
+  address_space       = each.value.address_space
+
+  tags = {
+    "Environment" = "production"
+  }
+}
+
+resource "azurerm_subnet" "subnet" {
+  for_each = { for subnet_name, subnet_data in flatten([for vnet_name, vnet_data in var.vnets : vnet_data.subnets]) : subnet_name => subnet_data }
+
+  name                              = each.value.name
+  resource_group_name               = var.vnets[each.key].resource_group_name
+  virtual_network_name              = var.vnets[each.key].name
+  address_prefixes                  = each.value.address_prefixes
+  service_endpoints                 = each.value.service_endpoints
+  private_endpoint_network_policies = each.value.private_endpoint_network_policies
+}
+```
+
+### 2. **Terratest Code**
+Now, write a Terratest in Go to test the network configuration.
+
+#### `test_azure_network.go`
+```go
+package test
+
+import (
+	"testing"
+	"fmt"
+	"strings"
+	"github.com/gruntwork-io/terratest/modules/terraform"
+	"github.com/stretchr/testify/assert"
+)
+
+// TestAzureNetwork verifies the creation of Azure VNets and Subnets based on input variables
+func TestAzureNetwork(t *testing.T) {
+	t.Parallel()
+
+	// Terraform Options
+	terraformOptions := &terraform.Options{
+		// Path to the Terraform code
+		TerraformDir: "../",
+
+		// Variables to pass into the Terraform configuration
+		Variables: map[string]interface{}{
+			"vnets": map[string]interface{}{
+				"vnet1": map[string]interface{}{
+					"name":                "MyVNet1",
+					"location":            "Canada Central",
+					"resource_group_name": "MyResourceGroup",
+					"address_space":       []string{"10.0.0.0/16"},
+					"subnets": map[string]interface{}{
+						"subnet1": map[string]interface{}{
+							"name":                              "Subnet1",
+							"address_prefixes":                  []string{"10.0.1.0/24"},
+							"nsg_name":                          "NSG1",
+							"service_endpoints":                 []string{},
+							"private_endpoint_network_policies": "Disabled",
+						},
+					},
+				},
+				"vnet2": map[string]interface{}{
+					"name":                "MyVNet2",
+					"location":            "Canada Central",
+					"resource_group_name": "MyResourceGroup",
+					"address_space":       []string{"10.1.0.0/16"},
+					"subnets": map[string]interface{}{
+						"subnet2": map[string]interface{}{
+							"name":                              "Subnet2",
+							"address_prefixes":                  []string{"10.1.1.0/24"},
+							"nsg_name":                          "NSG2",
+							"service_endpoints":                 []string{"Microsoft.Storage"},
+							"private_endpoint_network_policies": "Enabled",
+						},
+					},
+				},
+			},
+		},
+
+		// Disable colors in Terraform commands
+		NoColor: true,
+	}
+
+	// Run Terraform init and apply
+	defer terraform.Destroy(t, terraformOptions)
+	terraform.InitAndApply(t, terraformOptions)
+
+	// Validate if the VNets and Subnets are created as expected
+	validateVNet(t, terraformOptions, "MyVNet1", "10.0.0.0/16")
+	validateVNet(t, terraformOptions, "MyVNet2", "10.1.0.0/16")
+	validateSubnet(t, terraformOptions, "MyVNet1", "Subnet1", "10.0.1.0/24")
+	validateSubnet(t, terraformOptions, "MyVNet2", "Subnet2", "10.1.1.0/24")
+}
+
+// validateVNet checks if a VNet exists with the specified name and address space
+func validateVNet(t *testing.T, terraformOptions *terraform.Options, vnetName string, expectedAddressSpace string) {
+	vnet := terraform.Output(t, terraformOptions, fmt.Sprintf("%s_name", vnetName))
+	addressSpace := terraform.Output(t, terraformOptions, fmt.Sprintf("%s_address_space", vnetName))
+
+	assert.Equal(t, vnetName, vnet)
+	assert.Contains(t, addressSpace, expectedAddressSpace)
+}
+
+// validateSubnet checks if a subnet exists within the specified VNet and address space
+func validateSubnet(t *testing.T, terraformOptions *terraform.Options, vnetName string, subnetName string, expectedAddressPrefix string) {
+	subnet := terraform.Output(t, terraformOptions, fmt.Sprintf("%s_%s_name", vnetName, subnetName))
+	addressPrefix := terraform.Output(t, terraformOptions, fmt.Sprintf("%s_%s_address_prefix", vnetName, subnetName))
+
+	assert.Equal(t, subnetName, subnet)
+	assert.Contains(t, addressPrefix, expectedAddressPrefix)
+}
+```
+
+### 3. **Explanation of the Terratest Code**:
+
+- **Variables**: The `vnets` variable is passed as a map containing multiple VNets and their subnets. Each VNet can have its own unique subnets and configurations like address space, network security groups (NSGs), and service endpoints.
+
+- **Terraform Options**: The Terraform code is initialized and applied using the `terraform.InitAndApply` function. The `terraformOptions` variable includes input variables for the network configuration.
+
+- **Validation**: After Terraform applies the configuration, the test uses the `terraform.Output` function to fetch the created resources (e.g., VNet name, subnet name, address space). The test asserts that the actual output matches the expected values.
+
+- **Reusable Functions**: Functions like `validateVNet` and `validateSubnet` are used to check if the VNets and subnets are created as expected. This ensures that your test is modular and can handle multiple VNets and subnets easily.
+
+### 4. **Running the Test**:
+
+To run the Terratest, use the following command in your terminal:
+
+```bash
+go test -v
+```
+
+This will execute the test, apply the Terraform configuration, and validate the resources in Azure.
+
+### 5. **Conclusion**:
+This generic Terratest script is flexible enough to test any Azure network configuration by simply modifying the input variables in the Terraform configuration. It can handle multiple VNets and subnets, and you can easily extend it to check other properties, such as NSGs, route tables, or peering connections, by adding additional outputs and validation logic.
+
+To automate the validation process for multiple VNets and subnets without hardcoding specific values like `validateVNet(t, terraformOptions, "MyVNet1", "10.0.0.0/16")`, you can loop over the dynamic inputs (from the `vnets` variable) and automatically validate each VNet and subnet based on the values provided during the test.
+
+Here’s an updated version of the test code that automates the validation:
+
+### 1. **Updated `test_azure_network.go`**
+
+```go
+package test
+
+import (
+	"testing"
+	"fmt"
+	"github.com/gruntwork-io/terratest/modules/terraform"
+	"github.com/stretchr/testify/assert"
+	"strings"
+)
+
+// TestAzureNetwork verifies the creation of Azure VNets and Subnets based on input variables
+func TestAzureNetwork(t *testing.T) {
+	t.Parallel()
+
+	// Terraform Options
+	terraformOptions := &terraform.Options{
+		// Path to the Terraform code
+		TerraformDir: "../",
+
+		// Variables to pass into the Terraform configuration
+		Variables: map[string]interface{}{
+			"vnets": map[string]interface{}{
+				"vnet1": map[string]interface{}{
+					"name":                "MyVNet1",
+					"location":            "Canada Central",
+					"resource_group_name": "MyResourceGroup",
+					"address_space":       []string{"10.0.0.0/16"},
+					"subnets": map[string]interface{}{
+						"subnet1": map[string]interface{}{
+							"name":                              "Subnet1",
+							"address_prefixes":                  []string{"10.0.1.0/24"},
+							"nsg_name":                          "NSG1",
+							"service_endpoints":                 []string{},
+							"private_endpoint_network_policies": "Disabled",
+						},
+					},
+				},
+				"vnet2": map[string]interface{}{
+					"name":                "MyVNet2",
+					"location":            "Canada Central",
+					"resource_group_name": "MyResourceGroup",
+					"address_space":       []string{"10.1.0.0/16"},
+					"subnets": map[string]interface{}{
+						"subnet2": map[string]interface{}{
+							"name":                              "Subnet2",
+							"address_prefixes":                  []string{"10.1.1.0/24"},
+							"nsg_name":                          "NSG2",
+							"service_endpoints":                 []string{"Microsoft.Storage"},
+							"private_endpoint_network_policies": "Enabled",
+						},
+					},
+				},
+			},
+		},
+
+		// Disable colors in Terraform commands
+		NoColor: true,
+	}
+
+	// Run Terraform init and apply
+	defer terraform.Destroy(t, terraformOptions)
+	terraform.InitAndApply(t, terraformOptions)
+
+	// Automatically validate VNets and Subnets
+	vnets := terraform.OutputMap(t, terraformOptions, "vnets")
+	for vnetKey, vnetConfig := range vnets {
+		vnetName := vnetConfig["name"].(string)
+		addressSpace := vnetConfig["address_space"].([]string)[0]
+
+		// Validate VNet
+		validateVNet(t, terraformOptions, vnetName, addressSpace)
+
+		// Validate Subnets
+		subnets := vnetConfig["subnets"].(map[string]interface{})
+		for subnetKey, subnetConfig := range subnets {
+			subnetName := subnetConfig.(map[string]interface{})["name"].(string)
+			addressPrefix := subnetConfig.(map[string]interface{})["address_prefixes"].([]string)[0]
+
+			// Validate Subnet
+			validateSubnet(t, terraformOptions, vnetName, subnetName, addressPrefix)
+		}
+	}
+}
+
+// validateVNet checks if a VNet exists with the specified name and address space
+func validateVNet(t *testing.T, terraformOptions *terraform.Options, vnetName string, expectedAddressSpace string) {
+	vnet := terraform.Output(t, terraformOptions, fmt.Sprintf("%s_name", vnetName))
+	addressSpace := terraform.Output(t, terraformOptions, fmt.Sprintf("%s_address_space", vnetName))
+
+	assert.Equal(t, vnetName, vnet)
+	assert.Contains(t, addressSpace, expectedAddressSpace)
+}
+
+// validateSubnet checks if a subnet exists within the specified VNet and address space
+func validateSubnet(t *testing.T, terraformOptions *terraform.Options, vnetName string, subnetName string, expectedAddressPrefix string) {
+	subnet := terraform.Output(t, terraformOptions, fmt.Sprintf("%s_%s_name", vnetName, subnetName))
+	addressPrefix := terraform.Output(t, terraformOptions, fmt.Sprintf("%s_%s_address_prefix", vnetName, subnetName))
+
+	assert.Equal(t, subnetName, subnet)
+	assert.Contains(t, addressPrefix, expectedAddressPrefix)
+}
+```
+
+### 2. **Explanation of the Changes**:
+- **Dynamic Input Handling**: Instead of hardcoding specific values, we now loop over the `vnets` map and dynamically retrieve the name, address space, and subnet configurations.
+- **Validation Loop**: The `for` loop iterates over all VNets and subnets, automatically validating the resources without hardcoding specific keys. 
+  - It dynamically fetches `vnetName`, `addressSpace`, `subnetName`, and `addressPrefix` from the input variables.
+- **Flexible for Multiple VNets/Subnets**: The approach can handle any number of VNets and subnets as long as they are structured in the input variables (`vnets`).
+
+### 3. **Key Functions**:
+- **`validateVNet`**: This function checks if a VNet exists with the specified name and address space. The VNet name and address space are pulled dynamically from the input.
+- **`validateSubnet`**: This function checks if a subnet exists within the specified VNet and verifies if the subnet's address prefix matches the expected value.
+
+### 4. **Running the Test**:
+Run the test using:
+
+```bash
+go test -v
+```
+
+This will automatically loop through all VNets and subnets defined in the input variables, validate their creation, and confirm that the properties like VNet name, address space, subnet names, and address prefixes are correct.
+
+### 5. **Conclusion**:
+This method automates the validation process by iterating over the `vnets` and their subnets dynamically, so you don't need to hardcode the VNet and subnet details. You can easily extend this approach to add more checks or different resource types based on your needs.
